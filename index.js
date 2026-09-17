@@ -93,7 +93,7 @@ client.once('ready', async () => {
             .setDescription('Fecha o ponto aberto de um membro específico incorretamente')
             .addUserOption(option =>
                 option.setName('membro')
-                    .setDescription('O funcionário que está com o ponto incorreto/aberto')
+                    .setDescription('Selecione o funcionário que está com o ponto aberto')
                     .setRequired(true)),
 
         new SlashCommandBuilder()
@@ -120,8 +120,11 @@ client.once('ready', async () => {
         await rest.put(
             Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
             { body: commands },
-        );
+         );
         console.log('Comandos registrados com sucesso!');
+        
+        // Log de pontos ativos atuais para debug
+        console.log('Pontos ativos no momento:', Array.from(activePoints.keys()));
     } catch (error) {
         console.error('Erro ao registrar comandos:', error);
     }
@@ -130,12 +133,10 @@ client.once('ready', async () => {
         connectToBaseVoiceChannel();
     }, 3000);
 
-    // Loop executado a cada 5 segundos para atualizar os contadores de ponto abertos
     setInterval(() => {
         atualizarContadoresPonto();
     }, 5000);
 
-    // Loop de rotinas automáticas (23:59 e Domingo 06:00)
     setInterval(() => {
         verificarRotinasAutomaticas();
     }, 60000);
@@ -158,6 +159,12 @@ async function atualizarContadoresPonto() {
                 .setTimestamp();
 
             await data.messageObject.edit({ embeds: [embedAtualizado] });
+            
+            // Garante que o ID salvo internamente seja sempre exato com string limpa
+            if (data.userId && data.userId !== userId) {
+                activePoints.set(data.userId, data);
+            }
+            
         } catch (err) {}
     }
 }
@@ -178,7 +185,7 @@ function verificarRotinasAutomaticas() {
                     data.messageObject.edit({ 
                         content: `🔴 O ponto de <@${userId}> foi encerrado automaticamente pelo sistema às 23:59.`, 
                         embeds: [] 
-                  });
+                    });
                 } catch (e) {}
             }
             activePoints.clear();
@@ -430,7 +437,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         else if (commandName === 'fechar_ponto_membro') {
-            // Verifica se o usuário tem um dos cargos permitidos ou permissão de Administrador
             const memberRoles = interaction.member.roles.cache;
             const hasPermission = ALLOWED_MANAGER_ROLES.some(roleId => memberRoles.has(roleId)) || interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
@@ -440,21 +446,35 @@ client.on('interactionCreate', async interaction => {
 
             const alvo = interaction.options.getMember('membro');
             if (!alvo) {
-                return interaction.reply({ content: '❌ Membro não encontrado no servidor.', ephemeral: true });
+                return interaction.reply({ content: '❌ Membro não encontrado no servidor. Certifique-se de selecionar o usuário na lista pop-up.', ephemeral: true });
             }
 
-            if (!activePoints.has(alvo.id)) {
-                return interaction.reply({ content: `❌ O funcionário ${alvo} não possui nenhum ponto aberto no momento.`, ephemeral: true });
+            // Procura o ponto ativo considerando variações de chaves salvas no Map
+            let targetUserId = alvo.id;
+            let pontoData = activePoints.get(targetUserId);
+
+            // Caso não ache diretamente pelo ID do objeto Member, varre o Map buscando o ID dentro da string ou dados
+            if (!pontoData) {
+                for (const [key, data] of activePoints.entries()) {
+                    if (key.includes(alvo.id) || (data.messageObject && data.messageObject.embeds[0]?.description.includes(alvo.id))) {
+                        targetUserId = key;
+                        pontoData = data;
+                        break;
+                    }
+                }
+            }
+
+            if (!pontoData) {
+                return interaction.reply({ content: `❌ O funcionário ${alvo} não possui nenhum ponto aberto registrado na memória do bot no momento.`, ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
 
-            const pontoData = activePoints.get(alvo.id);
             const endTime = Date.now();
             const duracaoMs = endTime - pontoData.startTime;
 
-            weeklyReports.push({ userId: alvo.id, startTime: pontoData.startTime, endTime, duracaoMs });
-            activePoints.delete(alvo.id);
+            weeklyReports.push({ userId: targetUserId, startTime: pontoData.startTime, endTime, duracaoMs });
+            activePoints.delete(targetUserId);
 
             const segundosTotal = Math.floor(duracaoMs / 1000);
             const horas = Math.floor(segundosTotal / 3600);
@@ -463,7 +483,7 @@ client.on('interactionCreate', async interaction => {
 
             const embedFechado = new EmbedBuilder()
                 .setTitle('🔴 PONTO FECHADO (POR GESTÃO) - EXPEDIENTE ENCERRADO')
-                .setDescription(`Funcionário: <@${alvo.id}>\nEncerrado por: <@${interaction.user.id}>\n\n⏱️ **Tempo total computado:**\n\`${horas} hora(s), ${minutos} minuto(s) e ${segundos} segundo(s)\``)
+                .setDescription(`Funcionário: <@${targetUserId}>\nEncerrado por: <@${interaction.user.id}>\n\n⏱️ **Tempo total computado:**\n\`${horas} hora(s), ${minutos} minuto(s) e ${segundos} segundo(s)\``)
                 .setColor(0xE74C3C)
                 .setTimestamp();
 
@@ -471,7 +491,7 @@ client.on('interactionCreate', async interaction => {
                 await pontoData.messageObject.edit({ embeds: [embedFechado] });
             } catch (e) {}
 
-            return interaction.editReply({ content: `✅ O ponto incorreto de ${alvo} foi encerrado com sucesso! Total computado: **${horas}h ${minutos}m${segundos}s**.` });
+            return interaction.editReply({ content: `✅ O ponto de ${alvo} foi encerrado com sucesso pela gestão! Total computado: **${horas}h ${minutos}m${segundos}s**.` });
         }
 
         else if (commandName === 'play') {
@@ -531,7 +551,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Interações de Botões (Ponto e Currículo)
     if (interaction.isButton()) {
         const userId = interaction.user.id;
 
@@ -673,7 +692,7 @@ client.on('interactionCreate', async interaction => {
                             PermissionsBitField.Flags.ViewChannel,
                             PermissionsBitField.Flags.SendMessages,
                             PermissionsBitField.Flags.ManageChannels
-                        ],
+                        ]
                     }
                 ]
             });
@@ -700,7 +719,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Processamento dos Modais (Verificação e Currículo)
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_verificacao') {
             const nome = interaction.fields.getTextInputValue('input_nome').trim();
@@ -773,7 +791,7 @@ client.on('interactionCreate', async interaction => {
             } catch (e) {
                 console.error('Erro ao deletar canal de ticket:', e);
             }
-        }, 5000);
+       }, 5000);
     }
 });
 
