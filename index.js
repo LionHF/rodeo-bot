@@ -123,7 +123,6 @@ client.once('ready', async () => {
          );
         console.log('Comandos registrados com sucesso!');
         
-        // Log de pontos ativos atuais para debug
         console.log('Pontos ativos no momento:', Array.from(activePoints.keys()));
     } catch (error) {
         console.error('Erro ao registrar comandos:', error);
@@ -158,9 +157,17 @@ async function atualizarContadoresPonto() {
                 .setColor(0x2ECC71)
                 .setTimestamp();
 
-            await data.messageObject.edit({ embeds: [embedAtualizado] });
+            // Mantém o botão de encerramento para administradores na mensagem do ponto
+            const rowAdminPonto = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`btn_admin_fechar_${userId}`)
+                    .setLabel('Encerrar (Administradores)')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🛡️')
+            );
+
+            await data.messageObject.edit({ embeds: [embedAtualizado], components: [rowAdminPonto] });
             
-            // Garante que o ID salvo internamente seja sempre exato com string limpa
             if (data.userId && data.userId !== userId) {
                 activePoints.set(data.userId, data);
             }
@@ -184,7 +191,8 @@ function verificarRotinasAutomaticas() {
                 try {
                     data.messageObject.edit({ 
                         content: `🔴 O ponto de <@${userId}> foi encerrado automaticamente pelo sistema às 23:59.`, 
-                        embeds: [] 
+                        embeds: [],
+                        components: [] 
                     });
                 } catch (e) {}
             }
@@ -449,11 +457,9 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ Membro não encontrado no servidor. Certifique-se de selecionar o usuário na lista pop-up.', ephemeral: true });
             }
 
-            // Procura o ponto ativo considerando variações de chaves salvas no Map
             let targetUserId = alvo.id;
             let pontoData = activePoints.get(targetUserId);
 
-            // Caso não ache diretamente pelo ID do objeto Member, varre o Map buscando o ID dentro da string ou dados
             if (!pontoData) {
                 for (const [key, data] of activePoints.entries()) {
                     if (key.includes(alvo.id) || (data.messageObject && data.messageObject.embeds[0]?.description.includes(alvo.id))) {
@@ -488,7 +494,7 @@ client.on('interactionCreate', async interaction => {
                 .setTimestamp();
 
             try {
-                await pontoData.messageObject.edit({ embeds: [embedFechado] });
+                await pontoData.messageObject.edit({ embeds: [embedFechado], components: [] });
             } catch (e) {}
 
             return interaction.editReply({ content: `✅ O ponto de ${alvo} foi encerrado com sucesso pela gestão! Total computado: **${horas}h ${minutos}m${segundos}s**.` });
@@ -554,6 +560,48 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         const userId = interaction.user.id;
 
+        // Trata o clique no botão do administrador para encerrar o ponto do funcionário específico
+        if (interaction.customId.startsWith('btn_admin_fechar_')) {
+            const memberRoles = interaction.member.roles.cache;
+            const hasPermission = ALLOWED_MANAGER_ROLES.some(roleId => memberRoles.has(roleId)) || interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+            if (!hasPermission) {
+                return interaction.reply({ content: '❌ Apenas administradores e cargos autorizados podem encerrar este ponto.', ephemeral: true });
+            }
+
+            const targetUserId = interaction.customId.replace('btn_admin_fechar_', '');
+            const pontoData = activePoints.get(targetUserId);
+
+            if (!pontoData) {
+                return interaction.reply({ content: '❌ Este ponto já foi encerrado ou não está mais ativo na memória.', ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const endTime = Date.now();
+            const duracaoMs = endTime - pontoData.startTime;
+
+            weeklyReports.push({ userId: targetUserId, startTime: pontoData.startTime, endTime, duracaoMs });
+            activePoints.delete(targetUserId);
+
+            const segundosTotal = Math.floor(duracaoMs / 1000);
+            const horas = Math.floor(segundosTotal / 3600);
+            const minutos = Math.floor((segundosTotal % 3600) / 60);
+            const segundos = segundosTotal % 60;
+
+            const embedFechado = new EmbedBuilder()
+                .setTitle('🔴 PONTO FECHADO (POR GESTÃO) - EXPEDIENTE ENCERRADO')
+                .setDescription(`Funcionário: <@${targetUserId}>\nEncerrado por: <@${interaction.user.id}>\n\n⏱️ **Tempo total computado:**\n\`${horas} hora(s), ${minutos} minuto(s) e ${segundos} segundo(s)\``)
+                .setColor(0xE74C3C)
+                .setTimestamp();
+
+            try {
+                await pontoData.messageObject.edit({ embeds: [embedFechado], components: [] });
+            } catch (e) {}
+
+            return interaction.editReply({ content: `✅ Ponto do funcionário <@${targetUserId}> encerrado com sucesso! Total computado: **${horas}h ${minutos}m${segundos}s**.` });
+        }
+
         if (interaction.customId === 'btn_iniciar_ponto') {
             if (activePoints.has(userId)) {
                 return interaction.reply({ content: '⚠️ Você já está com um ponto aberto! Feche-o antes de iniciar outro.', ephemeral: true });
@@ -568,10 +616,18 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x2ECC71)
                 .setTimestamp();
 
-            const pontoMsg = await interaction.channel.send({ embeds: [embedPontoAtivo] });
+            const rowAdminPonto = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`btn_admin_fechar_${userId}`)
+                    .setLabel('Encerrar (Administradores)')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🛡️')
+            );
+
+            const pontoMsg = await interaction.channel.send({ embeds: [embedPontoAtivo], components: [rowAdminPonto] });
             activePoints.set(userId, { startTime, messageObject: pontoMsg });
 
-            return interaction.editReply({ content: '🟢 **Ponto iniciado publicamente com sucesso!** O contador já está rodando no chat.' });
+            return interaction.editReply({ content: '🟢 **Ponto iniciado publicamente com sucesso!** O contador já está rodando no chat e o botão de gestão foi anexado abaixo.' });
         }
 
         else if (interaction.customId === 'btn_fechar_ponto') {
@@ -600,7 +656,7 @@ client.on('interactionCreate', async interaction => {
                 .setTimestamp();
 
             try {
-                await pontoData.messageObject.edit({ embeds: [embedFechado] });
+                await pontoData.messageObject.edit({ embeds: [embedFechado], components: [] });
             } catch (e) {}
 
             return interaction.editReply({ content: `🔴 **Ponto fechado com sucesso!** Total computado: **${horas}h ${minutos}m${segundos}s**.` });
@@ -750,48 +806,6 @@ client.on('interactionCreate', async interaction => {
                 });
             }
         }
-
-        else if (interaction.customId === 'modal_curriculo') {
-            const nickId = interaction.fields.getTextInputValue('input_nick_id').trim();
-            const experiencia = interaction.fields.getTextInputValue('input_experiencia').trim();
-            const member = interaction.member;
-
-            const curriculoChannel = member.guild.channels.cache.get(CURRICULO_CHANNEL_ID);
-            if (!curriculoChannel) {
-                return interaction.reply({ content: '❌ O canal de currículos configurado não foi encontrado pelo bot.', ephemeral: true });
-            }
-
-            const embedCurriculoEnviado = new EmbedBuilder()
-                .setTitle('📄 Novo Currículo Recebido - Mecânica Rodeo')
-                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-                .setDescription(
-                    `👤 **Candidato:** ${member} (${member.user.tag})\n\n` +
-                    `🏷️ **Nome e ID:**\n\`${nickId}\`\n\n` +
-                    `💼 **Experiências Profissionais:**\n\`\`\`text\n${experiencia}\n\`\`\``
-                )
-                .setColor(0xF1C40F)
-                .setImage(GIF_URL)
-                .setTimestamp();
-
-            try {
-                await curriculoChannel.send({ embeds: [embedCurriculoEnviado] });
-                await interaction.reply({ content: '✅ **Currículo enviado com sucesso!** Ele já foi postado no canal de currículos para a nossa avaliação.', ephemeral: true });
-            } catch (error) {
-                console.error('Erro ao enviar currículo:', error);
-                await interaction.reply({ content: '❌ Ocorreu um erro ao tentar enviar o seu currículo. Tente novamente mais tarde.', ephemeral: true });
-            }
-        }
-    }
-
-    if (interaction.isButton() && interaction.customId === 'close_ticket') {
-        await interaction.reply({ content: '🔒 Este canal será fechado em 5 segundos...' });
-        setTimeout(async () => {
-            try {
-                await interaction.channel.delete();
-            } catch (e) {
-                console.error('Erro ao deletar canal de ticket:', e);
-            }
-       }, 5000);
     }
 });
 
