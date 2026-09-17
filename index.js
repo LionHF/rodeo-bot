@@ -42,6 +42,10 @@ const CURRICULO_CHANNEL_ID = '1549585669876092988'; // Canal exclusivo para envi
 const MUSIC_COMMAND_CHANNEL_ID = '1548001056762626271'; // Canal exclusivo para comandos de música
 const VOICE_24H_CHANNEL_ID = '1548003127846903828'; // Canal de voz fixo 24h
 const ROLE_CIDADAO_ID = '1547434977447125032'; // ID do cargo de Cidadão
+
+// Cargos autorizados a fechar ponto incorreto de membros
+const ALLOWED_MANAGER_ROLES = ['1547427099525124102', '1549985567981441085'];
+
 const GIF_URL = 'https://media.discordapp.net/attachments/1534238274074317030/1547627243826716813/Adobe_Express_-_e23176d43d4545d0ab83078d199f1245.gif?ex=6aa41bb0&is=6aa2ca30&hm=57d2f0c603bb718d1ada78e24b96dbb588e14ec6196b285a63580d4b76df241a&=&width=512&height=512';
 
 // Variáveis do sistema de música
@@ -83,6 +87,14 @@ client.once('ready', async () => {
                         { name: 'Painel de Ponto', value: 'ponto' },
                         { name: 'Painel de Currículo', value: 'curriculo' }
                     )),
+
+        new SlashCommandBuilder()
+            .setName('fechar_ponto_membro')
+            .setDescription('Fecha o ponto aberto de um membro específico incorretamente')
+            .addUserOption(option =>
+                option.setName('membro')
+                    .setDescription('O funcionário que está com o ponto incorreto/aberto')
+                    .setRequired(true)),
 
         new SlashCommandBuilder()
             .setName('play')
@@ -166,7 +178,7 @@ function verificarRotinasAutomaticas() {
                     data.messageObject.edit({ 
                         content: `🔴 O ponto de <@${userId}> foi encerrado automaticamente pelo sistema às 23:59.`, 
                         embeds: [] 
-                    });
+                  });
                 } catch (e) {}
             }
             activePoints.clear();
@@ -206,7 +218,7 @@ async function gerarRelatorioSemanalAutomatico() {
             const minutos = Math.floor((segundos % 3600) / 60);
             const segsRestantes = segundos % 60;
 
-            descricao += `• <@${userId}>: **${horas}h ${minutos}m ${segsRestantes}s** trabalhadas.\n`;
+            descricao += `• <@${userId}>: **${horas}h ${minutos}m${segsRestantes}s** trabalhadas.\n`;
         }
 
         const embedRelatorio = new EmbedBuilder()
@@ -417,6 +429,51 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
+        else if (commandName === 'fechar_ponto_membro') {
+            // Verifica se o usuário tem um dos cargos permitidos ou permissão de Administrador
+            const memberRoles = interaction.member.roles.cache;
+            const hasPermission = ALLOWED_MANAGER_ROLES.some(roleId => memberRoles.has(roleId)) || interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+            if (!hasPermission) {
+                return interaction.reply({ content: '❌ Você não possui permissão para utilizar este comando de gerenciamento de ponto.', ephemeral: true });
+            }
+
+            const alvo = interaction.options.getMember('membro');
+            if (!alvo) {
+                return interaction.reply({ content: '❌ Membro não encontrado no servidor.', ephemeral: true });
+            }
+
+            if (!activePoints.has(alvo.id)) {
+                return interaction.reply({ content: `❌ O funcionário ${alvo} não possui nenhum ponto aberto no momento.`, ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const pontoData = activePoints.get(alvo.id);
+            const endTime = Date.now();
+            const duracaoMs = endTime - pontoData.startTime;
+
+            weeklyReports.push({ userId: alvo.id, startTime: pontoData.startTime, endTime, duracaoMs });
+            activePoints.delete(alvo.id);
+
+            const segundosTotal = Math.floor(duracaoMs / 1000);
+            const horas = Math.floor(segundosTotal / 3600);
+            const minutos = Math.floor((segundosTotal % 3600) / 60);
+            const segundos = segundosTotal % 60;
+
+            const embedFechado = new EmbedBuilder()
+                .setTitle('🔴 PONTO FECHADO (POR GESTÃO) - EXPEDIENTE ENCERRADO')
+                .setDescription(`Funcionário: <@${alvo.id}>\nEncerrado por: <@${interaction.user.id}>\n\n⏱️ **Tempo total computado:**\n\`${horas} hora(s), ${minutos} minuto(s) e ${segundos} segundo(s)\``)
+                .setColor(0xE74C3C)
+                .setTimestamp();
+
+            try {
+                await pontoData.messageObject.edit({ embeds: [embedFechado] });
+            } catch (e) {}
+
+            return interaction.editReply({ content: `✅ O ponto incorreto de ${alvo} foi encerrado com sucesso! Total computado: **${horas}h ${minutos}m${segundos}s**.` });
+        }
+
         else if (commandName === 'play') {
             const voiceChannel = interaction.member.voice.channel;
             if (!voiceChannel) {
@@ -527,7 +584,7 @@ client.on('interactionCreate', async interaction => {
                 await pontoData.messageObject.edit({ embeds: [embedFechado] });
             } catch (e) {}
 
-            return interaction.editReply({ content: `🔴 **Ponto fechado com sucesso!** Total computado: **${horas}h ${minutos}m ${segundos}s**.` });
+            return interaction.editReply({ content: `🔴 **Ponto fechado com sucesso!** Total computado: **${horas}h ${minutos}m${segundos}s**.` });
         }
 
         else if (interaction.customId === 'btn_enviar_curriculo') {
@@ -657,7 +714,7 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
-            const novoApelido = `${nome} | ${idCidade}`;
+            const novoApelido = `${nome} \vert{}${idCidade}`;
 
             try {
                 await member.setNickname(novoApelido);
